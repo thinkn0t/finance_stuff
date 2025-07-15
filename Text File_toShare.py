@@ -107,7 +107,7 @@ earnings_url = 'https://api.nasdaq.com/api/calendar/earnings?date='
 '''
 # SEC Headers to avoid 403 errors
 sec_headers = {
-    'User-Agent': 'ResearchProject iintiice@gmail.com',
+    'User-Agent': 'ResearchProject uremail@gmail.com',
     'Accept': 'application/json, text, json',
     'Accept-Encoding': 'gzip, deflate',
     'Host': 'www.sec.gov'
