@@ -1,101 +1,84 @@
 import yfinance as yf
 import pandas as pd
-import logging
 import os
 from datetime import datetime, timedelta
 
-# Setup logging
-logging.basicConfig(
-    filename='yfinance_scrape.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-logging.info("=== Starting yfinance historical price scrape ===")
-
-# Path to your CIK ticker CSV file
+# Path to your ticker CSV
 cik_csv_path = 'Scraper/cik_list/cik_list.csv'
 
-if not os.path.exists(cik_csv_path):
-    logging.error(f"CIK CSV file not found: {cik_csv_path}")
-    raise FileNotFoundError(f"CIK CSV file not found: {cik_csv_path}")
-
-df = pd.read_csv(cik_csv_path)
-tickers = df['symbol'].dropna().unique().tolist()
-logging.info(f"Loaded {len(tickers)} tickers from CIK CSV.")
-
-output_dir = 'historical_prices_yfinance'
+# Output directory for historical prices
+output_dir = 'Scraper/stock_historical'
 os.makedirs(output_dir, exist_ok=True)
 
-end_date = datetime.today().strftime('%Y-%m-%d')  # Today's date as end
+# Load tickers
+df = pd.read_csv(cik_csv_path)
+tickers = df['symbol'].dropna().unique().tolist()
+print(f"Loaded {len(tickers)} tickers.")
 
-def load_ticker_data(filename):
+def get_last_date_for_ticker(ticker):
+    filename = os.path.join(output_dir, f"{ticker}.csv")
     if not os.path.exists(filename):
         return None
     try:
-        df = pd.read_csv(filename, parse_dates=['Date'], index_col='Date')
-        return df
-    except ValueError:
-        # Try without parse_dates first, then convert
-        try:
-            df = pd.read_csv(filename)
-            if 'Date' in df.columns:
-                df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-                df.set_index('Date', inplace=True)
-                return df
-            else:
-                logging.warning(f"'Date' column missing in {filename}. Skipping file.")
-                return None
-        except Exception as e:
-            logging.error(f"Error reading {filename}: {e}")
+        df_existing = pd.read_csv(filename, parse_dates=['Date'])
+        if df_existing.empty:
             return None
+        return df_existing['Date'].max()
     except Exception as e:
-        logging.error(f"Error reading {filename}: {e}")
+        print(f"Error reading existing file for {ticker}: {e}")
         return None
 
 for ticker in tickers:
-    filename = os.path.join(output_dir, f"{ticker}.csv")
-    existing_df = load_ticker_data(filename)
+    print(f"\nProcessing ticker: {ticker}")
     
-    if existing_df is None or existing_df.empty:
+    last_date = get_last_date_for_ticker(ticker)
+    
+    if last_date is None:
+        # If no existing data, start from 1980-01-01 or earlier
         start_date = '1980-01-01'
-        logging.info(f"No existing data for {ticker}, starting from {start_date}")
+        print(f"No existing data found. Downloading full history for {ticker} from {start_date}.")
     else:
-        last_date = existing_df.index.max()
-        start_date_dt = pd.to_datetime(last_date) + timedelta(days=1)
-        start_date = start_date_dt.strftime('%Y-%m-%d')
-        logging.info(f"{ticker} data exists up to {last_date.date()}, updating from {start_date}")
+        # Start from day after last_date to avoid overlap
+        start_date = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
+        print(f"Existing data found. Downloading new data for {ticker} from {start_date}.")
+    
+    end_date = datetime.today().strftime('%Y-%m-%d')
 
-    # If start_date is after or equal to end_date, skip ticker
-    if start_date >= end_date:
-        logging.info(f"{ticker} already up to date. Skipping download.")
-        print(f"{ticker} already up to date. Skipping.")
+    if start_date > end_date:
+        print(f"No new data to download for {ticker}.")
+        continue
+    
+    try:
+        data = yf.download(ticker, start=start_date, end=end_date, progress=False)
+    except Exception as e:
+        print(f"Failed to download data for {ticker}: {e}")
         continue
 
-    try:
-        data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
-        if data.empty:
-            logging.warning(f"No new data for {ticker} from {start_date} to {end_date}.")
-            print(f"No new data for {ticker}.")
-            continue
+    if data.empty:
+        print(f"No new data found for {ticker} between {start_date} and {end_date}.")
+        continue
+    
+    # Reset index to have Date as a column
+    data.reset_index(inplace=True)
+    
+    # Ensure columns are named simply: Date, Open, High, Low, Close, Volume, etc.
+    # If any multi-level columns exist, flatten them (should not happen here but safe)
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = ['_'.join(col).strip() for col in data.columns.values]
+    
+    # Read existing data if present
+    filename = os.path.join(output_dir, f"{ticker}.csv")
+    if os.path.exists(filename):
+        existing_df = pd.read_csv(filename, parse_dates=['Date'])
+        combined_df = pd.concat([existing_df, data], ignore_index=True)
+        # Remove possible duplicates (e.g. overlapping last day)
+        combined_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
+        combined_df.sort_values('Date', inplace=True)
+    else:
+        combined_df = data
 
-        # Show each new date in terminal
-        for date in data.index:
-            print(f"{ticker} - Date: {date.date()} - Close: {data.loc[date]['Close']}")
+    # Save combined data back to CSV with simple headers
+    combined_df.to_csv(filename, index=False)
+    print(f"Saved data for {ticker} ({len(data)} new rows) to {filename}.")
 
-        # Append or create file
-        if existing_df is not None and not existing_df.empty:
-            combined = pd.concat([existing_df, data])
-            combined = combined[~combined.index.duplicated(keep='last')]  # Remove duplicate dates
-            combined.to_csv(filename)
-            logging.info(f"Appended new data for {ticker} to {filename}")
-        else:
-            data.to_csv(filename)
-            logging.info(f"Saved new data for {ticker} to {filename}")
-
-    except Exception as e:
-        logging.error(f"Error downloading data for {ticker}: {e}")
-        print(f"Error downloading data for {ticker}: {e}")
-
-logging.info("=== Finished yfinance historical price scrape ===")
-print("=== Finished yfinance historical price scrape ===")
+print("\nAll done.")
